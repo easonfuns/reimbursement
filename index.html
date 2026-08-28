@@ -217,22 +217,9 @@
   .export-btn:active{transform:translateY(1px);}
   .refresh-btn{background:var(--ink);}
 
-  .settings-box{margin-bottom:14px;}
-  .settings-toggle{
-    background:none;border:1px solid var(--line);color:var(--ink-soft);
-    padding:7px 12px;border-radius:4px;font-size:.78rem;cursor:pointer;font-family:inherit;
+  .sync-indicator{
+    font-size:.78rem;color:var(--ink-soft);margin-bottom:10px;
   }
-  .settings-panel{
-    margin-top:8px;background:var(--paper2);border:1px solid var(--line);
-    border-radius:6px;padding:12px 14px;
-  }
-  .settings-panel label{display:block;font-size:.78rem;font-weight:700;color:var(--ink-soft);margin-bottom:6px;}
-  .settings-panel input{width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:4px;font-size:.82rem;margin-bottom:8px;}
-  .save-btn{
-    background:var(--ink);color:var(--paper);border:none;padding:7px 16px;
-    border-radius:4px;font-size:.8rem;cursor:pointer;font-family:inherit;
-  }
-  .settings-panel .hint{margin-top:6px;}
 
   .status-tag{
     display:inline-block;font-size:.7rem;padding:2px 9px;border-radius:10px;
@@ -461,22 +448,12 @@
   <!-- ===== 儀表板 ===== -->
   <section id="view-dash" class="view">
 
-    <div class="settings-box">
-      <button type="button" id="settingsToggle" class="settings-toggle">⚙ Google Sheet 連線設定</button>
-      <div id="settingsPanel" class="settings-panel" style="display:none;">
-        <label>Google Apps Script 網址</label>
-        <input type="text" id="sheetUrlInput" placeholder="貼上 .../exec 網址">
-        <label>財務審核密碼（設定後才需要密碼才能進入審核頁）</label>
-        <input type="text" id="adminPinInput" placeholder="例：1234（留空＝不設密碼）">
-        <button type="button" id="saveSheetUrl" class="save-btn">儲存設定</button>
-        <div class="hint" id="sheetUrlStatus"></div>
-      </div>
-    </div>
+    <div class="sync-indicator" id="syncIndicator">🔄 讀取中...</div>
 
     <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:0;">
       <select id="monthFilter"></select>
       <button id="exportBtn" class="export-btn">⬇ 匯出 Excel</button>
-      <button id="refreshStatusBtn" class="export-btn refresh-btn">🔄 更新狀態</button>
+      <button id="refreshStatusBtn" class="export-btn refresh-btn">🔄 重新整理</button>
     </div>
 
     <div class="stat-row">
@@ -534,57 +511,16 @@
 </main>
 
 <script>
-const KEY = 'claims:list';
-const STATUS_KEY = 'claims:status';
-const CONFIG_KEY = 'config:sheetUrl';
-const PIN_KEY = 'config:adminPin';
+// ⚙️ 系統設定 —— 這是唯一的資料庫來源，要換 Sheet 或改密碼就改這裡
+const SHEET_URL = 'https://script.google.com/macros/s/AKfycbwyet1oEcPXc0jFyVCTB_xP7Qs6EYKsfdxVgllZDdW-y-dznpEPj7a4n9nHca_ZKP53/exec';
+const ADMIN_PIN = '123456'; // 財務審核密碼
+
 let claims = [];
 let photoData = null;
-let sheetUrl = '';
-let adminPin = '';
 let adminVerified = false;
 let statusMap = {}; // id -> {status, reason, reviewedAt, reviewer, paidAt}
 
 const $ = id => document.getElementById(id);
-
-$('settingsToggle').addEventListener('click', ()=>{
-  const panel = $('settingsPanel');
-  panel.style.display = panel.style.display==='none' ? 'block' : 'none';
-});
-
-$('saveSheetUrl').addEventListener('click', async ()=>{
-  const url = $('sheetUrlInput').value.trim();
-  const pin = $('adminPinInput').value.trim();
-  if(!url){ $('sheetUrlStatus').textContent = '請貼上網址'; return; }
-  try{
-    await window.storage.set(CONFIG_KEY, url, true);
-    await window.storage.set(PIN_KEY, pin, true);
-    sheetUrl = url;
-    adminPin = pin;
-    $('sheetUrlStatus').textContent = '✅ 已儲存，之後每筆請款會自動寫入 Sheet 的「2026 9~12月」分頁';
-    refreshStatuses();
-  }catch(err){
-    $('sheetUrlStatus').textContent = '儲存失敗，請再試一次';
-  }
-});
-
-async function loadConfig(){
-  try{
-    const res = await window.storage.get(CONFIG_KEY, true);
-    sheetUrl = res && res.value ? res.value : '';
-    $('sheetUrlInput').value = sheetUrl;
-    $('sheetUrlStatus').textContent = sheetUrl ? '✅ 目前已連接 Google Sheet' : '尚未設定';
-  }catch(err){
-    sheetUrl = '';
-  }
-  try{
-    const res2 = await window.storage.get(PIN_KEY, true);
-    adminPin = res2 && res2.value ? res2.value : '';
-    $('adminPinInput').value = adminPin;
-  }catch(err){
-    adminPin = '';
-  }
-}
 
 // tabs
 document.querySelectorAll('.tab-btn').forEach(btn=>{
@@ -599,7 +535,7 @@ document.querySelectorAll('.tab-btn').forEach(btn=>{
 });
 
 function openAdminTab(){
-  if(!adminPin || adminVerified){
+  if(!ADMIN_PIN || adminVerified){
     $('pinGate').style.display='none';
     $('adminPanel').style.display='block';
     renderAdmin();
@@ -611,7 +547,7 @@ function openAdminTab(){
 
 $('pinSubmit').addEventListener('click', ()=>{
   const val = $('pinInput').value.trim();
-  if(val === adminPin){
+  if(val === ADMIN_PIN){
     adminVerified = true;
     $('pinHint').textContent = '';
     openAdminTab();
@@ -741,26 +677,24 @@ $('submitBtn').addEventListener('click', async ()=>{
   };
 
   try{
-    claims.push(entry);
-    const res = await window.storage.set(KEY, JSON.stringify(claims), true);
-    if(!res) throw new Error('storage failed');
+    const res = await fetch(SHEET_URL, {
+      method: 'POST',
+      headers: {'Content-Type':'text/plain;charset=utf-8'},
+      body: JSON.stringify({ action:'submit', ...entry, photoData: photoData || '' })
+    });
+    const result = await res.json();
+    if(!result || result.status !== 'ok'){
+      throw new Error((result && result.message) || '伺服器回應異常');
+    }
   }catch(err){
     console.error(err);
-    alert('送出失敗，請檢查網路後再試一次。');
-    claims.pop();
+    alert('送出失敗，請檢查網路連線後再試一次。\n錯誤訊息：' + err.message);
     btn.disabled=false; btn.textContent='送出請款';
     return;
   }
 
-  // 同步到 Google Sheet（背景執行，不阻擋畫面；每筆項目會各自寫成一列）
-  if(sheetUrl){
-    fetch(sheetUrl, {
-      method: 'POST',
-      mode: 'no-cors',
-      headers: {'Content-Type':'text/plain;charset=utf-8'},
-      body: JSON.stringify({ action:'submit', ...entry, photoData: photoData || '' })
-    }).catch(err=>console.error('Sheet同步失敗', err));
-  }
+  // 送出成功後，背景重新整理本地資料（不阻擋畫面）
+  loadClaims();
 
   btn.disabled=false; btn.textContent='送出請款';
   $('claimForm').style.display='none';
@@ -769,15 +703,66 @@ $('submitBtn').addEventListener('click', async ()=>{
 });
 
 async function loadClaims(){
+  const indicator = $('syncIndicator');
+  if(indicator) indicator.textContent = '🔄 讀取中...';
   try{
-    const res = await window.storage.get(KEY, true);
-    claims = res && res.value ? JSON.parse(res.value) : [];
+    const res = await fetch(SHEET_URL, {method:'GET'});
+    const rows = await res.json();
+
+    const map = {};
+    rows.forEach(r=>{
+      if(!r.id) return;
+      if(!map[r.id]){
+        map[r.id] = {
+          id: r.id,
+          name: r.name || '',
+          bankCode: r.bankCode || '',
+          acct: r.acct || '',
+          bankName: r.bankName || '',
+          items: [],
+          amount: 0,
+          hasPhoto: false,
+          photoUrl: '',
+          note: r.note || '',
+          submittedAt: r.submittedAt || r.date || ''
+        };
+      }
+      const c = map[r.id];
+      c.items.push({
+        type: r.type || '',
+        itemName: r.itemName || '',
+        invoiceNo: r.invoiceNo || '',
+        desc: r.desc || '',
+        amount: Number(r.amount) || 0
+      });
+      c.amount += Number(r.amount) || 0;
+      if(r.photoUrl){ c.hasPhoto = true; c.photoUrl = r.photoUrl; }
+    });
+
+    claims = Object.values(map).sort((a,b)=> (a.submittedAt||'').localeCompare(b.submittedAt||''));
+
+    const newStatusMap = {};
+    rows.forEach(r=>{
+      if(r.id && !newStatusMap[r.id]){
+        newStatusMap[r.id] = {
+          status: r.status || '待審核',
+          reason: r.reason || '',
+          reviewedAt: r.reviewedAt || '',
+          reviewer: r.reviewer || '',
+          paidAt: r.paidAt || ''
+        };
+      }
+    });
+    statusMap = newStatusMap;
+
+    if(indicator) indicator.textContent = '✅ 已同步 Google Sheet（' + claims.length + ' 筆申請單）';
   }catch(err){
-    claims = [];
+    console.error('讀取 Sheet 資料失敗', err);
+    if(indicator) indicator.textContent = '⚠️ 讀取失敗，請檢查網路後點「🔄 重新整理」';
   }
 }
 
-function monthKey(iso){ return iso.slice(0,7); }
+function monthKey(iso){ return (iso||'').slice(0,7); }
 
 function statusClass(s){
   if(s==='已核准') return 'approved';
@@ -786,17 +771,8 @@ function statusClass(s){
   return 'pending';
 }
 
-async function loadStatusMap(){
-  try{
-    const res = await window.storage.get(STATUS_KEY, true);
-    statusMap = res && res.value ? JSON.parse(res.value) : {};
-  }catch(err){
-    statusMap = {};
-  }
-}
-
 async function refreshStatuses(){
-  await loadStatusMap();
+  await loadClaims();
   renderDash();
   if($('view-admin').classList.contains('active') && adminVerified) renderAdmin();
 }
@@ -941,22 +917,33 @@ async function updateClaimStatus(id, status, reason){
   if(!reviewer){ alert('請先在上方填寫審核人姓名'); return; }
 
   const timestamp = new Date().toISOString();
+  const prevStatus = statusMap[id] || {};
+
+  // 先在畫面上樂觀更新，讓操作看起來即時
   statusMap[id] = {
     status,
     reason: reason || '',
-    reviewedAt: (status==='已核准'||status==='已退回') ? timestamp : (statusMap[id]?.reviewedAt||''),
-    reviewer: (status==='已核准'||status==='已退回') ? reviewer : (statusMap[id]?.reviewer||''),
-    paidAt: status==='已匯款' ? timestamp : (statusMap[id]?.paidAt||'')
+    reviewedAt: (status==='已核准'||status==='已退回') ? timestamp : (prevStatus.reviewedAt||''),
+    reviewer: (status==='已核准'||status==='已退回') ? reviewer : (prevStatus.reviewer||''),
+    paidAt: status==='已匯款' ? timestamp : (prevStatus.paidAt||'')
   };
   renderAdmin();
   renderDash();
 
   try{
-    const res = await window.storage.set(STATUS_KEY, JSON.stringify(statusMap), true);
-    if(!res) throw new Error('storage failed');
+    const res = await fetch(SHEET_URL, {
+      method: 'POST',
+      headers: {'Content-Type':'text/plain;charset=utf-8'},
+      body: JSON.stringify({ action:'update_status', id, status, reason: reason||'', reviewer, timestamp })
+    });
+    const result = await res.json();
+    if(!result || result.status !== 'ok') throw new Error((result && result.message) || '伺服器回應異常');
   }catch(err){
-    console.error('狀態儲存失敗', err);
-    alert('狀態更新儲存失敗，請檢查網路後再試一次');
+    console.error('狀態更新失敗', err);
+    alert('狀態更新失敗，請檢查網路後再試一次（畫面已還原）');
+    statusMap[id] = prevStatus;
+    renderAdmin();
+    renderDash();
   }
 }
 
@@ -1037,9 +1024,7 @@ $('exportBtn').addEventListener('click', ()=>{
 
 (async ()=>{
   addItemBlock();
-  await loadConfig();
   await loadClaims();
-  await loadStatusMap();
   renderDash();
 })();
 </script>
