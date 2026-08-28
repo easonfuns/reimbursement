@@ -376,15 +376,6 @@
         </div>
 
         <div class="field">
-          <label>發票 / 明細照片</label>
-          <div class="photo-drop" id="photoDrop">
-            <div class="placeholder" id="photoPlaceholder">點此上傳發票或明細截圖（需包含品項與總金額）</div>
-            <img id="photoPreview" style="display:none;">
-          </div>
-          <input type="file" id="f_photo" accept="image/*" style="display:none;">
-        </div>
-
-        <div class="field">
           <label>備註</label>
           <textarea id="f_note" placeholder="其他補充說明"></textarea>
         </div>
@@ -436,11 +427,19 @@
         <label>用途說明</label>
         <input type="text" class="item-desc" placeholder="請簡述採購項目或用途">
       </div>
-      <div class="field" style="margin-bottom:0;">
+      <div class="field" style="margin-bottom:14px;">
         <label>金額</label>
         <div class="amount-wrap">
           <input type="number" class="item-amount" min="0" step="1">
         </div>
+      </div>
+      <div class="field" style="margin-bottom:0;">
+        <label>發票 / 明細照片</label>
+        <div class="photo-drop item-photo-drop">
+          <div class="placeholder item-photo-placeholder">點此上傳這筆發票或明細照片</div>
+          <img class="item-photo-preview" style="display:none;">
+        </div>
+        <input type="file" class="item-photo-input" accept="image/*" style="display:none;">
       </div>
     </div>
   </template>
@@ -516,7 +515,6 @@ const SHEET_URL = 'https://script.google.com/macros/s/AKfycbwyet1oEcPXc0jFyVCTB_
 const ADMIN_PIN = '123456'; // 財務審核密碼
 
 let claims = [];
-let photoData = null;
 let adminVerified = false;
 let statusMap = {}; // id -> {status, reason, reviewedAt, reviewer, paidAt}
 
@@ -559,13 +557,17 @@ $('pinSubmit').addEventListener('click', ()=>{
 // ===== 動態項目管理 =====
 let itemCounter = 0;
 
+const itemPhotoMap = new Map(); // itemId -> base64 dataURL
+
 function addItemBlock(){
   itemCounter++;
+  const itemId = 'i_' + itemCounter;
   const tpl = $('itemTemplate').content.cloneNode(true);
   const block = tpl.querySelector('.item-block');
-  block.dataset.itemId = 'i_' + itemCounter;
+  block.dataset.itemId = itemId;
   block.querySelector('.item-index').textContent = '項目 #' + itemCounter;
   block.querySelector('.remove-item-btn').addEventListener('click', ()=>{
+    itemPhotoMap.delete(block.dataset.itemId);
     block.remove();
     renumberItems();
     recalcTotal();
@@ -573,6 +575,26 @@ function addItemBlock(){
   block.querySelectorAll('.item-amount').forEach(inp=>{
     inp.addEventListener('input', recalcTotal);
   });
+
+  // 每筆項目各自的照片上傳
+  const photoDrop = block.querySelector('.item-photo-drop');
+  const photoInput = block.querySelector('.item-photo-input');
+  const photoPreview = block.querySelector('.item-photo-preview');
+  const photoPlaceholder = block.querySelector('.item-photo-placeholder');
+  photoDrop.addEventListener('click', ()=> photoInput.click());
+  photoInput.addEventListener('change', e=>{
+    const file = e.target.files[0];
+    if(!file) return;
+    const reader = new FileReader();
+    reader.onload = ev=>{
+      itemPhotoMap.set(block.dataset.itemId, ev.target.result);
+      photoPreview.src = ev.target.result;
+      photoPreview.style.display = 'block';
+      photoPlaceholder.style.display = 'none';
+    };
+    reader.readAsDataURL(file);
+  });
+
   $('itemsContainer').appendChild(block);
   updateRemoveButtons();
 }
@@ -599,37 +621,21 @@ function recalcTotal(){
 }
 
 function collectItems(){
-  return [...$('itemsContainer').querySelectorAll('.item-block')].map((b, i)=>({
+  return [...$('itemsContainer').querySelectorAll('.item-block')].map((b)=>({
     type: b.querySelector('.item-type').value,
     itemName: b.querySelector('.item-name').value.trim(),
     invoiceNo: b.querySelector('.item-invoice').value.trim(),
     desc: b.querySelector('.item-desc').value.trim(),
-    amount: Number(b.querySelector('.item-amount').value) || 0
+    amount: Number(b.querySelector('.item-amount').value) || 0,
+    photoData: itemPhotoMap.get(b.dataset.itemId) || ''
   }));
 }
 
 $('addItemBtn').addEventListener('click', addItemBlock);
 
-// photo upload
-$('photoDrop').addEventListener('click', ()=> $('f_photo').click());
-$('f_photo').addEventListener('change', e=>{
-  const file = e.target.files[0];
-  if(!file) return;
-  const reader = new FileReader();
-  reader.onload = ev=>{
-    photoData = ev.target.result;
-    $('photoPreview').src = photoData;
-    $('photoPreview').style.display='block';
-    $('photoPlaceholder').style.display='none';
-  };
-  reader.readAsDataURL(file);
-});
-
 function resetForm(){
   $('claimForm').reset();
-  photoData = null;
-  $('photoPreview').style.display='none';
-  $('photoPlaceholder').style.display='block';
+  itemPhotoMap.clear();
   $('itemsContainer').innerHTML = '';
   itemCounter = 0;
   addItemBlock();
@@ -671,7 +677,7 @@ $('submitBtn').addEventListener('click', async ()=>{
     bankName: bankName,
     items: items,
     amount: totalAmount,
-    hasPhoto: !!photoData,
+    hasPhoto: items.some(it=>!!it.photoData),
     note: $('f_note').value.trim(),
     submittedAt: new Date().toISOString()
   };
@@ -680,7 +686,7 @@ $('submitBtn').addEventListener('click', async ()=>{
     const res = await fetch(SHEET_URL, {
       method: 'POST',
       headers: {'Content-Type':'text/plain;charset=utf-8'},
-      body: JSON.stringify({ action:'submit', ...entry, photoData: photoData || '' })
+      body: JSON.stringify({ action:'submit', ...entry })
     });
     const result = await res.json();
     if(!result || result.status !== 'ok'){
@@ -722,7 +728,6 @@ async function loadClaims(){
           items: [],
           amount: 0,
           hasPhoto: false,
-          photoUrl: '',
           note: r.note || '',
           submittedAt: r.submittedAt || r.date || ''
         };
@@ -733,10 +738,11 @@ async function loadClaims(){
         itemName: r.itemName || '',
         invoiceNo: r.invoiceNo || '',
         desc: r.desc || '',
-        amount: Number(r.amount) || 0
+        amount: Number(r.amount) || 0,
+        photoUrl: r.photoUrl || ''
       });
       c.amount += Number(r.amount) || 0;
-      if(r.photoUrl){ c.hasPhoto = true; c.photoUrl = r.photoUrl; }
+      if(r.photoUrl){ c.hasPhoto = true; }
     });
 
     claims = Object.values(map).sort((a,b)=> (a.submittedAt||'').localeCompare(b.submittedAt||''));
@@ -817,6 +823,7 @@ function renderDash(){
         <div class="item-row">
           <span class="tag">${it.type}</span>${it.itemName ? ' '+it.itemName : ''}
           ${it.desc ? ' － '+it.desc : ''}
+          ${it.photoUrl ? ` <a href="${it.photoUrl}" target="_blank" rel="noopener">📎照片</a>` : ' <span style="color:var(--ink-soft);">⚠️無照片</span>'}
           <span style="float:right;font-family:'IBM Plex Mono',monospace;">NT$${it.amount.toLocaleString()}</span>
         </div>`).join('');
       return `
@@ -827,7 +834,7 @@ function renderDash(){
         </div>
         <div class="meta">
           <span class="status-tag ${cls}">${st.status}</span>
-          ${c.hasPhoto ? '📎已附照片' : '⚠️未附照片'} ・ ${c.submittedAt.slice(0,10)}
+          ${c.submittedAt.slice(0,10)}
         </div>
         <div class="item-list">${itemsHtml}</div>
         ${st.status==='已退回' && st.reason ? `<div style="margin-top:6px;color:var(--stamp);font-size:.78rem;">退回原因：${st.reason}</div>` : ''}
@@ -882,13 +889,13 @@ function renderAdmin(){
         </div>
         <div class="meta">
           <span class="status-tag ${cls}">${st.status}</span>
-          ${c.hasPhoto ? '📎已附照片' : '⚠️未附照片'}
         </div>
         <div class="item-list">
           ${(c.items||[]).map(it=>`
             <div class="item-row">
               <span class="tag">${it.type}</span>${it.itemName ? ' '+it.itemName : ''}
               （發票：${it.invoiceNo||'—'}）－ ${it.desc||'—'}
+              ${it.photoUrl ? ` <a href="${it.photoUrl}" target="_blank" rel="noopener">📎照片</a>` : ' <span style="color:var(--ink-soft);">⚠️無照片</span>'}
               <span style="float:right;font-family:'IBM Plex Mono',monospace;">NT$${it.amount.toLocaleString()}</span>
             </div>`).join('')}
         </div>
@@ -971,7 +978,7 @@ $('exportBtn').addEventListener('click', ()=>{
         '銀行代號': c.bankCode,
         '銀行帳號': c.acct,
         '銀行抬頭': c.bankName,
-        '附照片': c.hasPhoto ? '是' : '否',
+        '發票照片': it.photoUrl || '（無）',
         '備註': c.note
       });
     });
